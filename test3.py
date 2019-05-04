@@ -1,5 +1,6 @@
 #coding=utf-8
 #这个版本准备实现多个模型版本的超参搜索咯
+#以及采用多个模型进行stacking咯。
 import pickle
 import numpy as np
 import pandas as pd
@@ -17,7 +18,9 @@ from xgboost import XGBClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB, BernoulliNB
-from mlxtend.classifier import stacking_classification, stacking_cv_classification
+from mlxtend.classifier import StackingClassifier, StackingCVClassifier
+
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 
 #读取数据并合并咯
 data_train = pd.read_csv("train.csv")
@@ -137,43 +140,6 @@ def parse_lr_nodes(trials, space_nodes):
     
     return best_nodes
 
-#几乎所有传统模型的random_state设置了具体的值，且超参一样那么结果完全一样
-#如果设置的是None则每次的训练结果有所差异，这就是为什么那些代码都会设置random_state
-def train_lr_model(best_nodes, X_train_scaled, Y_train):
-    
-    clf = LogisticRegression(penalty=best_nodes["penalty"], 
-                             C=best_nodes["C"],
-                             fit_intercept=best_nodes["fit_intercept"],
-                             class_weight=best_nodes["class_weight"],
-                             random_state=42)
-    
-    selector = RFE(clf, n_features_to_select=best_nodes["feature_num"])
-    X_train_scaled_new = selector.fit_transform(X_train_scaled, Y_train)
-    
-    clf.fit(X_train_scaled_new, Y_train)
-    print(clf.score(X_train_scaled_new, Y_train))
-    
-    return clf, X_train_scaled_new
-
-#这个主要是为了判断训练多次出来的逻辑回归模型是否完全一致
-#判断逻辑回归模型完全一致的办法就是他们的截距和系数完全一致吧
-#还记得模型训练过程其实是梯度下降算法，所以即便是所有参数以及超参相同
-#训练数据的顺序改变也会导致最终训练出来的模型有所差异吧（这就是梯度下降算法）。
-#可能这个真的是玄学很难判断同样的超参但是shuffle之后的数据训练出的模型谁更好吧？
-#最后的实验结果证明train_lr_model中clf的random_state为常数时候训练出的所有模型一样
-#设置为None的时候每次都不一样，这是因为训练数据的顺序被改变了，梯度下降算法就是这样的
-def compare_lr_model(clf1, clf2):
-
-    #print(type(clf1.coef_))
-    #print(type(clf1.intercept_))
-    #print(type(clf1.n_iter_))
-    #print(type(clf1.get_params()))
-    if((clf1.coef_==clf2.coef_).all() and (clf1.intercept_==clf2.intercept_).all() 
-       and (clf1.n_iter_==clf2.n_iter_).all()):
-        return True
-    else:
-        return False
-
 lr_space = {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
             "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
             "mean":hp.choice("mean", [0]),
@@ -196,6 +162,59 @@ lr_space_nodes = {"title":["stacked_don't_overfit!_II"],
                   "fit_intercept":["True", "False"],
                   "class_weight":["balanced", None]
                  }
+
+#几乎所有传统模型的random_state设置了具体的值，且超参一样那么结果完全一样
+#如果设置的是None则每次的训练结果有所差异，这就是为什么那些代码都会设置random_state
+
+#RFE的稳定性很大程度上取决于迭代时，底层用的哪种模型。
+#比如RFE采用的是普通的回归（LR），没有经过正则化的回归是不稳定的，那么RFE就是不稳定的。
+#假如采用的是Lasso/Ridge，正则化的回归是稳定的，那么RFE就是稳定的。
+#所以底层是不是应该换一个分类器，然后增加Adaboost进行超参搜索咯？但是先按照这个做一个版本的代码吧
+def train_lr_model(best_nodes, X_train_scaled, Y_train):
+    
+    clf = LogisticRegression(penalty=best_nodes["penalty"], 
+                             C=best_nodes["C"],
+                             fit_intercept=best_nodes["fit_intercept"],
+                             class_weight=best_nodes["class_weight"],
+                             random_state=42)
+    
+    selector = RFE(clf, n_features_to_select=best_nodes["feature_num"])
+    X_train_scaled_new = selector.fit_transform(X_train_scaled, Y_train)
+    feature_names = selector.get_support(1)
+    X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_names]]
+    
+    clf.fit(X_train_scaled_new, Y_train)
+    print(clf.score(X_train_scaled_new, Y_train))
+    
+    return clf, X_train_scaled_new, X_test_scaled_new.values
+
+def create_lr_model(best_nodes):
+    
+    clf = LogisticRegression(penalty=best_nodes["penalty"], 
+                             C=best_nodes["C"],
+                             fit_intercept=best_nodes["fit_intercept"],
+                             class_weight=best_nodes["class_weight"],
+                             random_state=42)
+    return clf
+
+#这个主要是为了判断训练多次出来的逻辑回归模型是否完全一致
+#判断逻辑回归模型完全一致的办法就是他们的截距和系数完全一致吧
+#还记得模型训练过程其实是梯度下降算法，所以即便是所有参数以及超参相同
+#训练数据的顺序改变也会导致最终训练出来的模型有所差异吧（这就是梯度下降算法）。
+#可能这个真的是玄学很难判断同样的超参但是shuffle之后的数据训练出的模型谁更好吧？
+#最后的实验结果证明train_lr_model中clf的random_state为常数时候训练出的所有模型一样
+#设置为None的时候每次都不一样，这是因为训练数据的顺序被改变了，梯度下降算法就是这样的
+def compare_lr_model(clf1, clf2):
+
+    #print(type(clf1.coef_))
+    #print(type(clf1.intercept_))
+    #print(type(clf1.n_iter_))
+    #print(type(clf1.get_params()))
+    if((clf1.coef_==clf2.coef_).all() and (clf1.intercept_==clf2.intercept_).all() 
+       and (clf1.n_iter_==clf2.n_iter_).all()):
+        return True
+    else:
+        return False
 
 """
 trials = Trials()
@@ -228,7 +247,7 @@ def xgb_f(params):
     print("path", params["path"])
     print("mean", params["mean"])
     print("std", params["std"])
-    print("feature_num", params["feature_num"])
+    #print("feature_num", params["feature_num"])
     print("gamma", params["gamma"]) 
     print("max_depth", params["max_depth"])
     print("learning_rate", params["learning_rate"])
@@ -252,11 +271,15 @@ def xgb_f(params):
 
     #这里不能够fit，不然交叉验证不就没意义了么
     #clf.fit(X_train_scaled, Y_train)
-    
+    """
+    #不需要再这个模型中进行特征选择了
     selector = RFE(clf, n_features_to_select=params["feature_num"])
     X_train_scaled_new = selector.fit_transform(X_train_scaled, Y_train)
     skf = StratifiedKFold(Y_train, n_folds=10, shuffle=True, random_state=42)
     metric = cross_val_score(clf, X_train_scaled_new, Y_train, cv=skf, scoring="roc_auc").mean()
+    """
+    skf = StratifiedKFold(Y_train, n_folds=10, shuffle=True, random_state=42)
+    metric = cross_val_score(clf, X_train_scaled, Y_train, cv=skf, scoring="roc_auc").mean()
     
     print(metric)
     print()
@@ -275,7 +298,7 @@ def parse_xgb_nodes(trials, space_nodes):
     best_nodes["mean"] = space_nodes["mean"][trials_list[0]["misc"]["vals"]["mean"][0]]
     best_nodes["std"] = space_nodes["std"][trials_list[0]["misc"]["vals"]["std"][0]]
     
-    best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
+    #best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
     best_nodes["gamma"] = space_nodes["gamma"][trials_list[0]["misc"]["vals"]["gamma"][0]]
     best_nodes["max_depth"] = space_nodes["max_depth"][trials_list[0]["misc"]["vals"]["max_depth"][0]]
     best_nodes["learning_rate"] = space_nodes["learning_rate"][trials_list[0]["misc"]["vals"]["learning_rate"][0]]
@@ -292,7 +315,7 @@ xgb_space = {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
              "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
              "mean":hp.choice("mean", [0]),
              "std":hp.choice("std", [0]),
-             "feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
+             #"feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
              "gamma":hp.choice("gamma", [0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.3, 0.5, 0.7, 0.9]),
              "max_depth":hp.choice("max_depth", [3, 5, 7, 9, 12, 15, 17, 25]),
              "learning_rate":hp.choice("learning_rate", np.linspace(0.01, 0.50, 50)),
@@ -308,7 +331,7 @@ xgb_space_nodes = {"title":["stacked_don't_overfit!_II"],
                    "path":["Don't_Overfit!_II_Prediction.csv"],
                    "mean":[0],
                    "std":[0],
-                   "feature_num":np.linspace(1,300,300),
+                   #"feature_num":np.linspace(1,300,300),
                    "gamma":[0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.3, 0.5, 0.7, 0.9],
                    "max_depth":[3, 5, 7, 9, 12, 15, 17, 25],
                    "learning_rate":np.linspace(0.01, 0.50, 50),
@@ -333,6 +356,7 @@ def train_xgb_model(best_nodes, X_train_scaled, Y_train):
                         n_estimators=int(best_nodes["n_estimators"]),
                         random_state=42)
     
+    """
     selector = RFE(clf, n_features_to_select=best_nodes["feature_num"])
     X_train_scaled_new = selector.fit_transform(X_train_scaled, Y_train)
     
@@ -340,6 +364,24 @@ def train_xgb_model(best_nodes, X_train_scaled, Y_train):
     print(clf.score(X_train_scaled_new, Y_train))
     
     return clf, X_train_scaled_new
+    """
+    clf.fit(X_train_scaled, Y_train)
+    print(clf.score(X_train_scaled, Y_train))
+    return clf 
+    
+def create_xgb_model(best_nodes):
+    
+    clf = XGBClassifier(gamma=best_nodes["gamma"],
+                        max_depth=best_nodes["max_depth"],
+                        learning_rate=best_nodes["learning_rate"],
+                        min_child_weight=best_nodes["min_child_weight"],
+                        subsample=best_nodes["subsample"],
+                        colsample_bytree=best_nodes["colsample_bytree"],
+                        reg_alpha=best_nodes["reg_alpha"],
+                        reg_lambda=best_nodes["reg_lambda"],
+                        n_estimators=int(best_nodes["n_estimators"]),
+                        random_state=42)
+    return clf 
 
 """
 trials = Trials()
@@ -357,7 +399,7 @@ def rf_f(params):
     print("path",params["path"]) 
     print("mean",params["mean"])
     print("std",params["std"])
-    print("feature_num",params["feature_num"])
+    #print("feature_num",params["feature_num"])
     print("n_estimators",params["n_estimators"])
     print("criterion",params["criterion"])
     print("max_depth",params["max_depth"])
@@ -375,12 +417,15 @@ def rf_f(params):
 
     #这里不能够fit，不然交叉验证不就没意义了么
     #clf.fit(X_train_scaled, Y_train)
-    
+    """
+    #现在不需要再这个模型内进行超参搜索咯
     selector = RFE(clf, n_features_to_select=params["feature_num"])
     X_train_scaled_new = selector.fit_transform(X_train_scaled, Y_train)
     skf = StratifiedKFold(Y_train, n_folds=10, shuffle=True, random_state=42)
     metric = cross_val_score(clf, X_train_scaled_new, Y_train, cv=skf, scoring="roc_auc").mean()
-    
+    """
+    skf = StratifiedKFold(Y_train, n_folds=10, shuffle=True, random_state=42)
+    metric = cross_val_score(clf, X_train_scaled, Y_train, cv=skf, scoring="roc_auc").mean()
     print(metric)
     print()
     return -metric
@@ -398,7 +443,7 @@ def parse_rf_nodes(trials, space_nodes):
     best_nodes["mean"] = space_nodes["mean"][trials_list[0]["misc"]["vals"]["mean"][0]]
     best_nodes["std"] = space_nodes["std"][trials_list[0]["misc"]["vals"]["std"][0]]
     
-    best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
+    #best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
     best_nodes["n_estimators"] = space_nodes["n_estimators"][trials_list[0]["misc"]["vals"]["n_estimators"][0]]
     best_nodes["criterion"] = space_nodes["criterion"][trials_list[0]["misc"]["vals"]["criterion"][0]]
     best_nodes["max_depth"] = space_nodes["max_depth"][trials_list[0]["misc"]["vals"]["max_depth"][0]]
@@ -412,9 +457,8 @@ rf_space =  {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
              "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
              "mean":hp.choice("mean", [0]),
              "std":hp.choice("std", [0]),
-             "feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
-             #"n_estimators":hp.choice("n_estimators", [120, 150, 200, 250, 300, 500, 800, 1000, 1200]),
-             "n_estimators":hp.choice("n_estimators", [120]),
+             #"feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
+             "n_estimators":hp.choice("n_estimators", [120, 150, 200, 250, 300, 500, 800, 1000, 1200]),
              "criterion":hp.choice("criterion", ["gini", "entropy"]),
              "max_depth":hp.choice("max_depth", [3, 5, 8, 10, 15, 20, 25]),
              "min_samples_split":hp.choice("min_samples_split", [2, 5, 10, 15, 20, 50, 100]),
@@ -426,9 +470,8 @@ rf_space_nodes = { "title":["stacked_don't_overfit!_II"],
                    "path":["Don't_Overfit!_II_Prediction.csv"],
                    "mean":[0],
                    "std":[0],
-                   "feature_num":np.linspace(1,300,300),
-                   #"n_estimators":[120, 150, 200, 250, 300, 500, 800, 1000, 1200],
-                   "n_estimators":[120],
+                   #"feature_num":np.linspace(1,300,300),
+                   "n_estimators":[120, 150, 200, 250, 300, 500, 800, 1000, 1200],
                    "criterion":["gini", "entropy"],
                    "max_depth":[3, 5, 8, 10, 15, 20, 25],
                    "min_samples_split":[2, 5, 10, 15, 20, 50, 100],
@@ -445,7 +488,8 @@ def train_rf_model(best_nodes, X_train_scaled, Y_train):
                                  min_samples_leaf=best_nodes["min_samples_leaf"],
                                  max_features=best_nodes["max_features"],
                                  random_state=42)
-    
+    """
+    #现在不需要在这个模型内做超参搜索咯
     selector = RFE(clf, n_features_to_select=best_nodes["feature_num"])
     X_train_scaled_new = selector.fit_transform(X_train_scaled, Y_train)
     
@@ -453,7 +497,22 @@ def train_rf_model(best_nodes, X_train_scaled, Y_train):
     print(clf.score(X_train_scaled_new, Y_train))
     
     return clf, X_train_scaled_new
- 
+    """
+    clf.fit(X_train_scaled, Y_train)
+    print(clf.score(X_train_scaled, Y_train))
+    return clf
+
+def create_rf_model(best_nodes):
+    
+    clf = RandomForestClassifier(n_estimators=best_nodes["n_estimators"],
+                                 criterion=best_nodes["criterion"],
+                                 max_depth=best_nodes["max_depth"],
+                                 min_samples_split=best_nodes["min_samples_split"],
+                                 min_samples_leaf=best_nodes["min_samples_leaf"],
+                                 max_features=best_nodes["max_features"],
+                                 random_state=42)
+    return clf
+    
 """
 trials = Trials()
 algo = partial(tpe.suggest, n_startup_jobs=10)
@@ -485,14 +544,14 @@ gnb_space =  {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
               "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
               "mean":hp.choice("mean", [0]),
               "std":hp.choice("std", [0]),
-              "feature_num":hp.choice("feature_num", np.linspace(1,300,300))
+              #"feature_num":hp.choice("feature_num", np.linspace(1,300,300))
               }
 
 gnb_space_nodes = {"title":["stacked_don't_overfit!_II"],
                    "path":["Don't_Overfit!_II_Prediction.csv"],
                    "mean":[0],
                    "std":[0],
-                   "feature_num":np.linspace(1,300,300)
+                   #"feature_num":np.linspace(1,300,300)
                    }
 
 def train_gnb_model(X_train_scaled, Y_train):
@@ -515,7 +574,12 @@ def train_gnb_model(X_train_scaled, Y_train):
     print(clf.score(X_train_scaled, Y_train))
     return clf
 
-"""    
+def create_gnb_model():
+    
+    clf = GaussianNB()
+    return clf
+
+"""
 train_gnb_model(X_train_scaled, Y_train)
 """
 
@@ -526,7 +590,7 @@ def knn_f(params):
     print("path",params["path"])
     print("mean",params["mean"])
     print("std",params["std"])
-    print("feature_num",params["feature_num"])
+    #print("feature_num",params["feature_num"])
     print("n_neighbors",params["n_neighbors"])
     print("weights",params["weights"])
     print("algorithm",params["algorithm"])
@@ -566,7 +630,7 @@ def parse_knn_nodes(trials, space_nodes):
     best_nodes["mean"] = space_nodes["mean"][trials_list[0]["misc"]["vals"]["mean"][0]]
     best_nodes["std"] = space_nodes["std"][trials_list[0]["misc"]["vals"]["std"][0]]
     
-    best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
+    #best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
     best_nodes["n_neighbors"] = space_nodes["n_neighbors"][trials_list[0]["misc"]["vals"]["n_neighbors"][0]]
     best_nodes["weights"] = space_nodes["weights"][trials_list[0]["misc"]["vals"]["weights"][0]]
     best_nodes["algorithm"] = space_nodes["algorithm"][trials_list[0]["misc"]["vals"]["algorithm"][0]]
@@ -578,7 +642,7 @@ knn_space =  {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
               "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
               "mean":hp.choice("mean", [0]),
               "std":hp.choice("std", [0]),
-              "feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
+              #"feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
               "n_neighbors":hp.choice("n_neighbors", [2, 4, 8, 16, 32, 64]),
               "weights":hp.choice("weights", ["uniform", "distance"]),
               "algorithm":hp.choice("algorithm", ["auto", "ball_tree", "kd_tree", "brute"]),
@@ -589,7 +653,7 @@ knn_space_nodes = {"title":["stacked_don't_overfit!_II"],
                    "path":["Don't_Overfit!_II_Prediction.csv"],
                    "mean":[0],
                    "std":[0],
-                   "feature_num":np.linspace(1,300,300),
+                   #"feature_num":np.linspace(1,300,300),
                    "n_neighbors":[2, 4, 8, 16, 32, 64],
                    "weights":["uniform", "distance"],
                    "algorithm":["auto", "ball_tree", "kd_tree", "brute"],
@@ -619,6 +683,14 @@ def train_knn_model(best_nodes, X_train_scaled, Y_train):
     print(clf.score(X_train_scaled, Y_train))
     return clf
 
+def create_knn_model(best_nodes):
+    
+    clf = KNeighborsClassifier(n_neighbors=best_nodes["n_neighbors"],
+                               weights=best_nodes["weights"],
+                               algorithm=best_nodes["algorithm"],
+                               p=best_nodes["p"])
+    return clf
+
 """
 trials = Trials()
 algo = partial(tpe.suggest, n_startup_jobs=10)
@@ -635,7 +707,7 @@ def svm_f(params):
     print("path",params["path"])
     print("mean",params["mean"])
     print("std",params["std"])
-    print("feature_num",params["feature_num"])
+    #print("feature_num",params["feature_num"])
     print("gamma",params["gamma"])
     print("C",params["C"])
     print("class_weight",params["class_weight"])
@@ -674,7 +746,7 @@ def parse_svm_nodes(trials, space_nodes):
     best_nodes["mean"] = space_nodes["mean"][trials_list[0]["misc"]["vals"]["mean"][0]]
     best_nodes["std"] = space_nodes["std"][trials_list[0]["misc"]["vals"]["std"][0]]
     
-    best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
+    #best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
     best_nodes["gamma"] = space_nodes["gamma"][trials_list[0]["misc"]["vals"]["gamma"][0]]
     best_nodes["C"] = space_nodes["C"][trials_list[0]["misc"]["vals"]["C"][0]]
     best_nodes["class_weight"] = space_nodes["class_weight"][trials_list[0]["misc"]["vals"]["class_weight"][0]]
@@ -685,7 +757,7 @@ svm_space =  {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
               "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
               "mean":hp.choice("mean", [0]),
               "std":hp.choice("std", [0]),
-              "feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
+              #"feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
               "gamma":hp.choice("gamma", ["auto"]),
               "C":hp.choice("C", np.logspace(-3, 5, 9)),
               "class_weight":hp.choice("class_weight", [None, "balanced"])
@@ -695,7 +767,7 @@ svm_space_nodes = {"title":["stacked_don't_overfit!_II"],
                    "path":["Don't_Overfit!_II_Prediction.csv"],
                    "mean":[0],
                    "std":[0],
-                   "feature_num":np.linspace(1,300,300),
+                   #"feature_num":np.linspace(1,300,300),
                    "gamma":["auto"],
                    "C":np.logspace(-3, 5, 9),
                    "class_weight":[None, "balanced"]
@@ -726,6 +798,14 @@ def train_svm_model(best_nodes, X_train_scaled, Y_train):
     print(clf.score(X_train_scaled, Y_train))
     return clf   
 
+def create_svm_model(best_nodes):
+
+    clf = svm.SVC(gamma=best_nodes["gamma"],
+                  C=best_nodes["C"],
+                  class_weight=best_nodes["class_weight"],
+                  random_state=42)
+    return clf  
+
 """
 trials = Trials()
 algo = partial(tpe.suggest, n_startup_jobs=10)
@@ -749,7 +829,7 @@ def mlp_f(params):
     print("path",params["path"])
     print("mean",params["mean"])
     print("std",params["std"])
-    print("feature_num",params["feature_num"])    
+    #print("feature_num",params["feature_num"])    
     print("hidden_layer_sizes",params["hidden_layer_sizes"])
     print("activation",params["activation"])
     print("solver",params["solver"])
@@ -796,7 +876,7 @@ def parse_mlp_nodes(trials, space_nodes):
     best_nodes["mean"] = space_nodes["mean"][trials_list[0]["misc"]["vals"]["mean"][0]]
     best_nodes["std"] = space_nodes["std"][trials_list[0]["misc"]["vals"]["std"][0]]
     
-    best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
+    #best_nodes["feature_num"] = space_nodes["feature_num"][trials_list[0]["misc"]["vals"]["feature_num"][0]]
     best_nodes["hidden_layer_sizes"] = space_nodes["hidden_layer_sizes"][trials_list[0]["misc"]["vals"]["hidden_layer_sizes"][0]]
     best_nodes["activation"] = space_nodes["activation"][trials_list[0]["misc"]["vals"]["activation"][0]]
     best_nodes["solver"] = space_nodes["solver"][trials_list[0]["misc"]["vals"]["solver"][0]]
@@ -812,7 +892,7 @@ mlp_space =  {"title":hp.choice("title", ["stacked_don't_overfit!_II"]),
               "path":hp.choice("path", ["Don't_Overfit!_II_Prediction.csv"]),
               "mean":hp.choice("mean", [0]),
               "std":hp.choice("std", [0]),
-              "feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
+              #"feature_num":hp.choice("feature_num", np.linspace(1,300,300)),
               "hidden_layer_sizes":hp.choice("hidden_layer_sizes", [(50,), (80,), (100,), (150,), (200,),
                                                                     (50,50), (80, 80), (120, 120), (150, 150),
                                                                     (50, 50, 50), (80, 80, 80), (120, 120, 120)]),
@@ -829,7 +909,7 @@ mlp_space_nodes = {"title":["stacked_don't_overfit!_II"],
                    "path":["Don't_Overfit!_II_Prediction.csv"],
                    "mean":[0],
                    "std":[0],
-                   "feature_num":np.linspace(1,300,300),
+                   #"feature_num":np.linspace(1,300,300),
                    "hidden_layer_sizes":[(50,), (80,), (100,), (150,), (200,),
                                          (50,50), (80, 80), (120, 120), (150, 150),
                                          (50, 50, 50), (80, 80, 80), (120, 120, 120)],
@@ -857,11 +937,104 @@ def train_mlp_model(best_nodes, X_train_scaled, Y_train):
     print(clf.score(X_train_scaled, Y_train))
     return clf   
 
+def create_mlp_model(best_nodes):
+    
+    clf = MLPClassifier(hidden_layer_sizes=best_nodes["hidden_layer_sizes"],
+                        activation=best_nodes["activation"],
+                        solver=best_nodes["solver"],
+                        batch_size=best_nodes["batch_size"],
+                        learning_rate_init=best_nodes["learning_rate_init"],
+                        max_iter=best_nodes["max_iter"],
+                        shuffle=best_nodes["shuffle"],
+                        early_stopping=best_nodes["early_stopping"],
+                        random_state=42)
+    return clf
+
 """
 trials = Trials()
 algo = partial(tpe.suggest, n_startup_jobs=10)
-best_params = fmin(mlp_f, mlp_space, algo=tpe.suggest, max_evals=500, trials=trials)
+best_params = fmin(mlp_f, mlp_space, algo=tpe.suggest, max_evals=10, trials=trials)
 best_nodes = parse_mlp_nodes(trials, mlp_space_nodes)
 save_inter_params(trials, mlp_space_nodes, best_nodes, "mlp_don't_overfit!_II")
 train_mlp_model(best_nodes, X_train_scaled, Y_train)
 """
+
+#通过lr寻找最佳的输入数据的结构
+trials = Trials()
+algo = partial(tpe.suggest, n_startup_jobs=10)
+best_params = fmin(lr_f, lr_space, algo=tpe.suggest, max_evals=3, trials=trials)
+best_nodes = parse_lr_nodes(trials, lr_space_nodes)
+save_inter_params(trials, lr_space_nodes, best_nodes, "lr_don't_overfit!_II")
+#RFE的稳定性很大程度上取决于迭代时，底层用的哪种模型。
+#比如RFE采用的是普通的回归（LR），没有经过正则化的回归是不稳定的，那么RFE就是不稳定的。
+#假如采用的是Lasso/Ridge，正则化的回归是稳定的，那么RFE就是稳定的。
+#所以底层是不是应该换一个分类器，然后增加Adaboost进行超参搜索咯？但是先按照这个做一个版本的代码吧
+lr, X_train_scaled, X_test_scaled = train_lr_model(best_nodes, X_train_scaled, Y_train)
+
+#然后开始修改每个模型的超参搜索咯
+#现在超参修改完了才发现需要对每个模型进行超参搜索咯
+#搜索完之后再进行stacking咯。。
+#但是我现在先把所有的路径先走通再说吧
+#xgb选择超参
+trials = Trials()
+algo = partial(tpe.suggest, n_startup_jobs=10)
+best_params = fmin(xgb_f, xgb_space, algo=tpe.suggest, max_evals=3, trials=trials)
+best_nodes = parse_xgb_nodes(trials, xgb_space_nodes)
+save_inter_params(trials, xgb_space_nodes, best_nodes, "xgb_don't_overfit!_II")
+#train_xgb_model(best_nodes, X_train_scaled, Y_train)
+xgb = create_xgb_model(best_nodes)
+
+#rf选择超参
+trials = Trials()
+algo = partial(tpe.suggest, n_startup_jobs=10)
+best_params = fmin(rf_f, rf_space, algo=tpe.suggest, max_evals=3, trials=trials)
+best_nodes = parse_rf_nodes(trials, rf_space_nodes)
+save_inter_params(trials, rf_space_nodes, best_nodes, "rf_don't_overfit!_II")
+#train_rf_model(best_nodes, X_train_scaled, Y_train)
+rf = create_rf_model(best_nodes)
+
+#并没有选择超参
+#train_gnb_model(X_train_scaled, Y_train)
+gnb = create_gnb_model()
+
+#knn选择超参
+trials = Trials()
+algo = partial(tpe.suggest, n_startup_jobs=10)
+best_params = fmin(knn_f, knn_space, algo=tpe.suggest, max_evals=3, trials=trials)
+best_nodes = parse_knn_nodes(trials, knn_space_nodes)
+save_inter_params(trials, knn_space_nodes, best_nodes, "knn_don't_overfit!_II")
+#train_knn_model(best_nodes, X_train_scaled, Y_train)
+knn = create_knn_model(best_nodes)
+
+#svm选择超参
+trials = Trials()
+algo = partial(tpe.suggest, n_startup_jobs=10)
+best_params = fmin(svm_f, svm_space, algo=tpe.suggest, max_evals=3, trials=trials)
+best_nodes = parse_svm_nodes(trials, svm_space_nodes)
+save_inter_params(trials, svm_space_nodes, best_nodes, "svm_don't_overfit!_II")
+#train_svm_model(best_nodes, X_train_scaled, Y_train)
+svm = create_svm_model(best_nodes)
+
+"""
+lr = LogisticRegression()
+sclf = StackingClassifier(classifiers=(xgb, rf, gnb, knn, svm), meta_classifier=lr)
+sclf.fit(X_train_scaled, Y_train)
+pred = sclf.predict(X_test_scaled)
+print(sclf.score(X_train_scaled, Y_train))
+"""
+
+lr = LogisticRegression()
+sclf = StackingClassifier(classifiers=(xgb, rf, gnb, knn, svm), meta_classifier=lr)
+param_dist = {"meta-logisticregression__penalty": ["l1", "l2"],
+              "meta-logisticregression__C": np.logspace(-4, 5, 100),
+              "meta-logisticregression__fit_intercept": [True, False],
+              "meta-logisticregression__class_weight": ["balanced", None],
+             }
+random_search = RandomizedSearchCV(estimator=sclf, param_distributions=param_dist, n_iter=20, scoring="roc_auc", random_state=42)
+random_search.fit(X_train_scaled, Y_train)
+best_acc = random_search.best_estimator_.score(X_train_scaled, Y_train)
+pred = random_search.best_estimator_.predict(X_test_scaled)
+
+data = {"id":data_test["id"], "target":pred}
+output = pd.DataFrame(data = data)
+output.to_csv("stacking_pred.csv", index=False)
