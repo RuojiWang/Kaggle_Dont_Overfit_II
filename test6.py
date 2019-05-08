@@ -1,14 +1,20 @@
 #coding=utf-8
-#这个版本主要是看了几个kernel和discussion之后自己有点想法想要优化
-#一个是采用随机森林和eli5进行特征选择，使用catboosrclassifier分类器
-#然后我今天之内应该能够提交一个新的版本吧.下面是两个模型库的介绍感觉蛮干货的
-#https://blog.csdn.net/linxid/article/details/80723811
-#https://zhuanlan.zhihu.com/p/45898896
-#下面三篇是对我有一些帮助的kernel吧，我觉得目前最大的问题就是特征选择咯
-#https://www.kaggle.com/artgor/how-to-not-overfit#ELI5
-#https://www.kaggle.com/featureblind/robust-lasso-patches-with-rfe-gs
-#https://www.kaggle.com/mjbahmani/tutorial-on-ensemble-learning-don-t-overfit#7--Don't-Overfit
-#所以我现在决定就采用rf然后控制不同的
+#这个版本主要是复盘一下这两周参加比赛的一个新的，感觉还是难以释怀这个成绩
+#这么有意思的比赛，然后我自己还挺有信心的，最后居然是这个成绩，主要还是时间不足吧
+#最后test5提交的结果炸了呀，我个人感觉出现问题的地方应该是特征的选择和stacking模型的选择
+#先实验一下选择出的特征和网络上的kernel选择出来的特征是否一样
+#然我不淡定的就是有一个人用逻辑回归进行了简单的网格搜索然后就提交结果，居然也有0.83的成绩
+#所以以后每次都先做个单模型，典型的就是逻辑回归和catboost试试水在说其他的吧。。
+#https://www.kaggle.com/praxitelisk/don-t-overfit-ii-eda-ml/notebook
+#对比了一下这个kernel我发现自己没对数据的分布做统计，采用相关性做的特征选择，因为他没有缺失值，所以我做的比较马虎
+#这个人的特征选择也是通过rf选择的，我觉得很奇怪的是他选出的特征都和我不一样。
+#https://www.kaggle.com/mitjasha/don-t-overfit-2-linear-models-with-hyperopt
+#这个kernel为了防止过拟合故意增加了噪声，用的lr eli5和相关系数RFCV（采用lr模型）选择的特征，用的贝叶斯优化选择超参。。
+#https://www.kaggle.com/iavinas/simple-short-solution-don-t-overfit-0-848
+#这个kernel真的让我觉得耻辱，这么简单的lr单模型居然可以取得这么好的效果，属实带秀熬，我觉得很奇怪只用了lr连特征选择都没有熬，可能只是sample code吧
+#还有我发现了一个非常神奇的现象就是别人提交的都是predict_proba(test)，原来在上面还可以采用提交概率的方式么，我还以为必须是严格的0或者1呢
+#最后我个人倾向于认为不同的分类器应该自己选择自己的特征，而不是应该在一开始统一由某个分类器全部选择，至于为什么是12可能就是试出来的吧
+#以后先单模型做到最佳就不会遇到类似的问题了，我之后将会继续使用现在的代码如果不是上述原因，那么我之后的比赛可能还会遇到这种情况。
 import pickle
 import datetime
 import numpy as np
@@ -990,75 +996,33 @@ perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_t
 eli5.show_weights(perm, feature_names = X_train_scaled.columns.tolist())
 """
 
-"""
-#这个实验就是真的搞笑了，svm xgb cgb反馈的结果都是选出了0个特征。。只有rf和lr选出了特征，不同的random还不一样= =！
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
+rfc_model = LogisticRegression(random_state=42, penalty="l1").fit(X_train_scaled, Y_train)
 perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
+#这边可以证明feature_importances_选出来的特征序号也就是feature_importances2
+#和eli5.formatters.as_dataframe.explain_weights_df特征编号也就是top_feat一样
+feature_importances1 = perm.feature_importances_#这是返回每个特征的权重
 feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0)
+feature_importances2 = np.where(feature_importances1>0.008)#此时我记录下了每个特征的列数
+#DataFrame.columns,The column labels of the DataFrame.
+#X_train_scaled.columns[feature_importances2]返回了对应列数的名字或者标签，这个同网上kernel的eli5.show_weights(perm, top=10)结果
+#然后在调试界面输入X_train_scaled[X_train_scaled.columns[feature_importances2]]，发现确实将相应的列数据读出来了，同kernel结果
 X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
 X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
 print(feature_importances1)
-print(feature_importances_std)
+#print(feature_importances_std)
 print(feature_importances2)
 print(len(feature_importances2[0]))
+print(eli5.formatters.as_dataframe.explain_weights_df(perm).feature)
+top_feat = [i[1:] for i in eli5.formatters.as_dataframe.explain_weights_df(perm).feature]
+top_feat1 = top_feat[:15]
+#top_feat1.append('target')
+corr = X_train_scaled[top_feat1].corr()
+#corr.target.sort_values(ascending=False)
+print(top_feat1)
+print(corr)
 print()
-
-train_X, val_X, train_y, val_y = train_test_split(X_train_scaled, Y_train, random_state=1)
-rfc_model = RandomForestClassifier(random_state=42).fit(train_X, train_y)
-perm = PermutationImportance(rfc_model, random_state=42).fit(val_X, val_y)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = svm.SVC(random_state=9).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-train_X, val_X, train_y, val_y = train_test_split(X_train_scaled, Y_train, random_state=1)
-rfc_model = svm.SVC(random_state=9).fit(train_X, train_y)
-perm = PermutationImportance(rfc_model, random_state=42).fit(val_X, val_y)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = CatBoostClassifier(random_seed=9).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-"""
+print(X_train_scaled_new)
+print(rfc_model.coef_)
 
 rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
 perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
@@ -1067,163 +1031,10 @@ feature_importances_std = perm.feature_importances_std_
 feature_importances2 = np.where(feature_importances1>0.005)
 X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
 X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-#print(feature_importances1)
-#print(feature_importances_std)
-#print(feature_importances2)
-#print(len(feature_importances2[0]))
-#print()
+print(feature_importances1)
+print(feature_importances_std)
+print(feature_importances2)
+print(len(feature_importances2[0]))
+print()
 X_train_scaled = X_train_scaled_new
 X_test_scaled = X_test_scaled_new
-
-"""
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.001)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.002)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.003)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.004)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.005)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.006)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-print(feature_importances2)
-print(len(feature_importances2[0]))
-print()
-
-rfc_model = RandomForestClassifier(random_state=42).fit(X_train_scaled, Y_train)
-perm = PermutationImportance(rfc_model, random_state=42).fit(X_train_scaled, Y_train)
-feature_importances1 = perm.feature_importances_
-feature_importances_std = perm.feature_importances_std_ 
-feature_importances2 = np.where(feature_importances1>0.007)
-X_train_scaled_new = X_train_scaled[X_train_scaled.columns[feature_importances2]]
-X_test_scaled_new = X_test_scaled[X_test_scaled.columns[feature_importances2]]
-print(feature_importances1)
-print(feature_importances_std)
-"""
-
-start_time = datetime.datetime.now()
-#然后开始修改每个模型的超参搜索咯
-#现在超参修改完了才发现需要对每个模型进行超参搜索咯
-#搜索完之后再进行stacking咯。。
-#但是我现在先把所有的路径先走通再说吧
-#xgb选择超参
-trials = Trials()
-algo = partial(tpe.suggest, n_startup_jobs=10)
-best_params = fmin(xgb_f, xgb_space, algo=tpe.suggest, max_evals=1000, trials=trials)
-best_nodes = parse_xgb_nodes(trials, xgb_space_nodes)
-save_inter_params(trials, xgb_space_nodes, best_nodes, "xgb_don't_overfit!_II")
-#train_xgb_model(best_nodes, X_train_scaled, Y_train)
-xgb = create_xgb_model(best_nodes)
-
-#rf选择超参
-trials = Trials()
-algo = partial(tpe.suggest, n_startup_jobs=10)
-best_params = fmin(rf_f, rf_space, algo=tpe.suggest, max_evals=1000, trials=trials)
-best_nodes = parse_rf_nodes(trials, rf_space_nodes)
-save_inter_params(trials, rf_space_nodes, best_nodes, "rf_don't_overfit!_II")
-#train_rf_model(best_nodes, X_train_scaled, Y_train)
-rf = create_rf_model(best_nodes)
-
-#并没有选择超参
-#train_gnb_model(X_train_scaled, Y_train)
-gnb = create_gnb_model()
-
-#knn选择超参
-trials = Trials()
-algo = partial(tpe.suggest, n_startup_jobs=10)
-best_params = fmin(knn_f, knn_space, algo=tpe.suggest, max_evals=1000, trials=trials)
-best_nodes = parse_knn_nodes(trials, knn_space_nodes)
-save_inter_params(trials, knn_space_nodes, best_nodes, "knn_don't_overfit!_II")
-#train_knn_model(best_nodes, X_train_scaled, Y_train)
-knn = create_knn_model(best_nodes)
-
-#svm选择超参
-trials = Trials()
-algo = partial(tpe.suggest, n_startup_jobs=10)
-best_params = fmin(svm_f, svm_space, algo=tpe.suggest, max_evals=1000, trials=trials)
-best_nodes = parse_svm_nodes(trials, svm_space_nodes)
-save_inter_params(trials, svm_space_nodes, best_nodes, "svm_don't_overfit!_II")
-#train_svm_model(best_nodes, X_train_scaled, Y_train)
-svm = create_svm_model(best_nodes)
-
-lr = LogisticRegression()
-sclf = StackingClassifier(classifiers=(xgb, rf, gnb, knn, svm), meta_classifier=lr)
-param_dist = {"meta-logisticregression__penalty": ["l1", "l2"],
-              "meta-logisticregression__C": np.logspace(-4, 5, 100),
-              "meta-logisticregression__fit_intercept": [True, False],
-              "meta-logisticregression__class_weight": ["balanced", None],
-             }
-random_search = RandomizedSearchCV(estimator=sclf, param_distributions=param_dist, cv=10, n_iter=400, scoring="roc_auc", random_state=42)
-random_search.fit(X_train_scaled, Y_train)
-best_acc = random_search.best_estimator_.score(X_train_scaled, Y_train)
-pred = random_search.best_estimator_.predict(X_test_scaled)
-
-data = {"id":data_test["id"], "target":pred}
-output = pd.DataFrame(data = data)
-output.to_csv("stacking_pred.csv", index=False)
-end_time = datetime.datetime.now()
-print("time cost", (end_time - start_time))
