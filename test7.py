@@ -1270,7 +1270,7 @@ def get_oof_nonnn(best_model, X_train_scaled, Y_train, X_test_scaled, n_folds = 
         print("当前模型：",type(best_model))
         print("训练集上的准确率", score1)
         train_rmse.append(score1)
-        score2 = best_model.socre(X_split_valida, Y_split_valida)
+        score2 = best_model.score(X_split_valida, Y_split_valida)
         print("验证集上的准确率", score2)
         valida_rmse.append(score2)
         
@@ -1308,7 +1308,7 @@ def logistic_stacking_rscv_predict(nodes_list, data_test, stacked_train, Y_train
     param_dist = {"penalty": ["l1", "l2"],
                   "C": np.logspace(-3, 5, 100),
                   "fit_intercept": [True, False],
-                  "class_weight": ["balance", None],
+                  "class_weight": ["balanced", None],
                   }
     random_search = RandomizedSearchCV(clf, param_distributions=param_dist, n_iter=max_evals, cv=10, scoring="accuracy")#,scoring ="mother_fucker" #,scoring ="mean_squared_error" #, scoring="neg_mean_squared_error")
     random_search.fit(stacked_train, Y_train)
@@ -1322,7 +1322,7 @@ def logistic_stacking_rscv_predict(nodes_list, data_test, stacked_train, Y_train
     output.to_csv(nodes_list[0]["path"], index=False)
     print("prediction file has been written.")
      
-    print("the best coefficient R^2 of the model on the whole train dataset is:", best_score)
+    print("the best score of the model on the whole train dataset is:", best_score)
     print()
     return random_search.best_estimator_, Y_pred
 
@@ -1339,6 +1339,7 @@ clf = train_lgb_model(best_lgb_nodes, X_train_scaled, Y_train)
 end_time = datetime.datetime.now()
 print("time cost", (end_time - start_time))
 print()
+
 #这个是xgb进行超参搜索的版本
 start_time = datetime.datetime.now()
 trials = Trials()
@@ -1351,7 +1352,7 @@ clf = train_xgb_model(best_xgb_nodes, X_train_scaled, Y_train)
 end_time = datetime.datetime.now()
 print("time cost", (end_time - start_time))
 print()
-"""
+
 #这个是cat进行超参搜索的版本
 start_time = datetime.datetime.now()
 trials = Trials()
@@ -1364,20 +1365,20 @@ rsg = train_cat_model(best_cat_nodes, X_train_scaled, Y_train)
 end_time = datetime.datetime.now()
 print("time cost", (end_time - start_time))
 print()
-"""
+
 start_time = datetime.datetime.now()
 #进行stacking的部分，我之前看这个比赛别人都是blending还以为不适合stacking，其实回归问题以及这个比赛还是有stacking的
 trials, space_nodes, best_lgb_nodes = load_inter_params("lgb_don't_overfit!_II")
 best_lgb_model = create_lgb_model(best_lgb_nodes, X_train_scaled, Y_train)
 trials, space_nodes, best_xgb_nodes = load_inter_params("xgb_don't_overfit!_II")
 best_xgb_model = create_xgb_model(best_xgb_nodes, X_train_scaled, Y_train)
-#trials, space_nodes, best_cat_nodes = load_inter_params("cgb_don't_overfit!_II")
-#best_cat_model = create_cat_model(best_cat_nodes, X_train_scaled, Y_train)
+trials, space_nodes, best_cat_nodes = load_inter_params("cat_don't_overfit!_II")
+best_cat_model = create_cat_model(best_cat_nodes, X_train_scaled, Y_train)
 
-nodes_list = [best_lgb_nodes, best_xgb_nodes] 
-models_list = [best_lgb_model, best_xgb_model] 
-#nodes_list = [best_lgb_nodes, best_xgb_nodes, best_cat_nodes] 
-#models_list = [best_lgb_model, best_xgb_model, best_cat_model]
+#nodes_list = [best_lgb_nodes, best_xgb_nodes] 
+#models_list = [best_lgb_model, best_xgb_model] 
+nodes_list = [best_lgb_nodes, best_xgb_nodes, best_cat_nodes] 
+models_list = [best_lgb_model, best_xgb_model, best_cat_model]
 stacked_train, stacked_test = stacked_features_nonnn(models_list, X_train_scaled, Y_train, X_test_scaled, 2)
 save_stacked_dataset(stacked_train, stacked_test, "tmdb_box_office_prediction")
 logistic_stacking_rscv_predict(nodes_list, data_test, stacked_train, Y_train, stacked_test, 600)
